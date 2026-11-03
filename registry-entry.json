@@ -1,0 +1,11 @@
+{
+  "package": "magpie-plugin-today-auth",
+  "name": "Today AI",
+  "providers": [
+    "today"
+  ],
+  "summary": {
+    "en": "Today AI (todayai.cn) as a magpie provider: phone-code or cookie sign-in, the account's mode/model tiers (Balanced, Power, DeepSeek, GLM), chat over Today's canonical message protocol (WebSocket push with HTTP polling fallback), and plan usage on the card.",
+    "zh": "把 Today AI（todayai.cn）接进 magpie：手机验证码或 Cookie 登录，账号级档位（Balanced / Power / DeepSeek / GLM），通过 Today 的 canonical 消息协议跑对话（WebSocket 推送，断线自动退回轮询），卡片上显示套餐与每条额度。"
+  }
+}
