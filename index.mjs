@@ -56,7 +56,18 @@ import { ICON, NPM, PROVIDER, PROVIDER_NAME } from "./src/identity.mjs"
 
 const REFRESH_LEAD_MS = 5 * 60_000
 
-export const TodayAuthPlugin = async (ctx = {}) => {
+export const TodayAuthPlugin = async (ctx = {}, options = {}) => {
+  // 插件选项（`magpie plugin options <插件> '<json>'`）：
+  //   isolation     "task"（默认）：一个 magpie session 一条 Today 任务会话
+  //                 "main"：全部走账号主会话
+  //   attachments   默认 true；false 时忽略图片
+  //   contextWindow 声明给 agent 的上下文窗口，默认 200000
+  const settings = {
+    isolation: options?.isolation === "main" ? "main" : "task",
+    attachments: options?.attachments !== false,
+    contextWindow: Number(options?.contextWindow) > 0 ? Math.floor(Number(options.contextWindow)) : 200_000,
+  }
+
   const log = (message, level = "info") => {
     try {
       ctx?.client?.app?.log?.({ service: PROVIDER, level, message })
@@ -247,6 +258,8 @@ export const TodayAuthPlugin = async (ctx = {}) => {
               deviceId: current.deviceId,
               accountKey: current.account || auth.uid || "",
               mainConversationId: current.mainConversationId || "",
+              isolation: settings.isolation,
+              attachments: settings.attachments,
               log,
             })
 
@@ -317,7 +330,7 @@ export const TodayAuthPlugin = async (ctx = {}) => {
               status: "active",
               cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
               // Today 不回 token 数也不给窗口，先给保守值；填大只会让 agent 晚压缩
-              limit: { context: 200_000, output: 64_000 },
+              limit: { context: settings.contextWindow, output: 64_000 },
               modalities: { input: ["text"], output: ["text"] },
               capabilities: {
                 temperature: false,

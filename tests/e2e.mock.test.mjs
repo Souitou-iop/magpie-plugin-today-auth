@@ -277,3 +277,118 @@ test("半途收到服务端 error 帧：不断流", async () => {
   assert.equal(sseText(child.stdout), "你好，这是 Today。")
   await noisy.close()
 })
+
+// ── 会话隔离（isolation="task"）────────────────────────────────────────
+
+function chatRequest({ model = "deepseek-v4.1-flash", text = "隔离", session = "", content } = {}) {
+  const body = content
+    ? { model, stream: true, messages: [{ role: "user", content }] }
+    : { model, stream: true, messages: [{ role: "user", content: text }] }
+  return new Request("http://local/v1/chat/completions", {
+    method: "POST",
+    headers: { "content-type": "application/json", ...(session ? { "x-today-session": session } : {}) },
+    body: JSON.stringify(body),
+  })
+}
+
+test("隔离：同一个会话 id 复用一条 Today 任务会话", async () => {
+  const { chatFetch } = await import("../src/chat.mjs")
+  const first = await chatFetch({
+    input: chatRequest({ session: "sess-A" }),
+    token: "mock-jwt-token",
+    deviceId: "web_test",
+    accountKey: "acct-1",
+  })
+  await first.text()
+  assert.equal(mock.state.tasks, 1, "第一条消息顺带建了任务会话")
+  const created = mock.state.appended.at(-1)
+  assert.equal(created.target?.type, "new_task")
+
+  const second = await chatFetch({
+    input: chatRequest({ session: "sess-A" }),
+    token: "mock-jwt-token",
+    deviceId: "web_test",
+    accountKey: "acct-1",
+  })
+  await second.text()
+  assert.equal(mock.state.tasks, 1, "同一会话不重复建")
+  const followUp = mock.state.appended.at(-1)
+  assert.equal(followUp.isMainChat, false)
+  assert.equal(followUp.conversationId, "conv_task_1")
+  assert.equal(followUp.taskId, "task_1")
+
+  const other = await chatFetch({
+    input: chatRequest({ session: "sess-B" }),
+    token: "mock-jwt-token",
+    deviceId: "web_test",
+    accountKey: "acct-1",
+  })
+  await other.text()
+  assert.equal(mock.state.tasks, 2, "另一个会话是另一条任务会话")
+  assert.equal(mock.state.appended.at(-1).target?.type, "new_task")
+})
+
+test('isolation:"main" 时退回主会话', async () => {
+  const { chatFetch } = await import("../src/chat.mjs")
+  const response = await chatFetch({
+    input: chatRequest({ session: "sess-main", text: "主会话" }),
+    token: "mock-jwt-token",
+    deviceId: "web_test",
+    accountKey: "acct-main",
+    isolation: "main",
+  })
+  await response.text()
+  const sent = mock.state.appended.at(-1)
+  assert.equal(sent.isMainChat, true)
+  assert.equal(sent.target, undefined)
+})
+
+// ── 图片附件 ─────────────────────────────────────────────────────────
+
+test("图片：data URL 先上传，再把 fileRef 塞进 parts", async () => {
+  const { chatFetch } = await import("../src/chat.mjs")
+  const png =
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+  const before = mock.state.uploads.length
+  const response = await chatFetch({
+    input: chatRequest({
+      session: "sess-img",
+      model: "glm-5.3",
+      content: [{ type: "text", text: "这是什么颜色？" }, { type: "image_url", image_url: { url: png } }],
+    }),
+    token: "mock-jwt-token",
+    deviceId: "web_test",
+    accountKey: "acct-img",
+  })
+  const text = await response.text()
+  assert.equal(sseText(text), "你好，这是 Today。")
+  assert.equal(mock.state.uploads.length, before + 1, "上传了一次")
+
+  const sent = mock.state.appended.at(-1)
+  const imagePart = sent.body.parts.find((p) => p.type === "image")
+  assert.ok(imagePart, "parts 里要有 image")
+  assert.match(imagePart.uploadedFile.fileRef.fileId, /^nd_/)
+  // 缺 url / downloadUrl 时真服务端回 400
+  assert.ok(imagePart.uploadedFile.url)
+  assert.ok(imagePart.uploadedFile.downloadUrl)
+})
+
+test("图片：attachments:false 时忽略", async () => {
+  const { chatFetch } = await import("../src/chat.mjs")
+  const png =
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+  const before = mock.state.uploads.length
+  const response = await chatFetch({
+    input: chatRequest({
+      session: "sess-noimg",
+      content: [{ type: "text", text: "只看文字" }, { type: "image_url", image_url: { url: png } }],
+    }),
+    token: "mock-jwt-token",
+    deviceId: "web_test",
+    accountKey: "acct-noimg",
+    attachments: false,
+  })
+  await response.text()
+  assert.equal(mock.state.uploads.length, before)
+  assert.equal(mock.state.appended.at(-1).body.parts.filter((p) => p.type === "image").length, 0)
+})

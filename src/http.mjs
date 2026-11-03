@@ -399,10 +399,31 @@ export async function putModelOption({ token, deviceId, optionId, signal }) {
  * 非主聊形态还要 conversationId（+ 可选 taskId），但服务端是否会为未知
  * conversationId 建会话没有实测证据，所以默认只用主聊。
  */
-export async function appendMessage({ token, deviceId, clientMessageId, body, isMainChat = true, conversationId, signal }) {
-  const request = isMainChat
-    ? { isMainChat: true, clientMessageId, body }
-    : { isMainChat: false, conversationId, clientMessageId, body }
+export async function appendMessage({
+  token,
+  deviceId,
+  clientMessageId,
+  body,
+  isMainChat = true,
+  conversationId,
+  taskId,
+  target,
+  signal,
+}) {
+  // ⚠ 三种形态互斥（schema 是 strict 的）：
+  //   主聊           { isMainChat:true, clientMessageId, body }
+  //   已有会话       { isMainChat:false, conversationId, taskId?, clientMessageId, body }
+  //   建新任务会话   { clientMessageId, body, target:{type:"new_task",surface:"task_panel"} }
+  //     —— 这一种**不能**带 isMainChat：带上就被 400 Invalid request 拒掉（实测）。
+  let request
+  if (target) {
+    request = { clientMessageId, body, target }
+  } else if (isMainChat) {
+    request = { isMainChat: true, clientMessageId, body }
+  } else {
+    request = { isMainChat: false, conversationId, ...(taskId ? { taskId } : {}), clientMessageId, body }
+  }
+
   const payload = await requestJson(`${API_BASE}/v1/messages`, {
     method: "POST",
     token,
@@ -434,6 +455,74 @@ export async function fetchHistory({ token, deviceId, conversationId, after, bef
     items,
     nextCursor: paging.nextCursor ?? null,
     hasMore: paging.hasMore === true,
+  }
+}
+
+// ── 附件 ──────────────────────────────────────────────────────────────
+
+/**
+ * 上传一个文件，返回可以塞进 canonical parts 的 `uploadedFile`。
+ *
+ * 实测（2026-11-03）：
+ *   POST /v1/files  multipart{file, source, purpose}
+ *   → 201 {file:{id, storagePath, url, downloadUrl, filename, mimeType, size, type, fileRef:{fileId,versionId}, width?, height?}}
+ *
+ * 拼 part 时**必须**带 url / storagePath / downloadUrl / fileRef：
+ * 只给 id+filename+mimeType+size 会被回 400 Invalid request（缺字段）。
+ */
+export async function uploadFile({ token, deviceId, data, filename, mimeType, source = "chat", signal }) {
+  const form = new FormData()
+  form.append("file", new Blob([data], { type: mimeType || "application/octet-stream" }), filename)
+  form.append("source", source)
+  form.append("purpose", "chat_attachment")
+  let response
+  try {
+    response = await fetch(`${API_BASE}/v1/files`, {
+      method: "POST",
+      headers: {
+        accept: "application/json",
+        "x-app-version": APP_VERSION,
+        "x-client-platform": CLIENT_PLATFORM,
+        "x-device-id": deviceId,
+        authorization: `Bearer ${token}`,
+      },
+      body: form,
+      signal,
+    })
+  } catch (error) {
+    if (signal?.aborted) throw error
+    throw new TodayApiError(`上传失败：${error?.message ?? error}`, { phase: "upload" })
+  }
+  const payload = await readJson(response)
+  if (!response.ok) {
+    const err = envelopeError(payload, response.status)
+    err.phase = "upload"
+    throw err
+  }
+  const file = payload?.file ?? payload?.data?.file
+  if (!file?.id || !file?.fileRef?.fileId) {
+    throw new TodayApiError("上传响应里没有 file.id / fileRef", { phase: "upload" })
+  }
+  return file
+}
+
+/** 从上传响应拼出 canonical part 的 uploadedFile（字段缺一个就是 400） */
+export function uploadedFileOf(file) {
+  const type = file.type === "pdf" ? "file" : file.type || "file"
+  return {
+    id: file.id,
+    url: file.url,
+    fileRef: { fileId: file.fileRef.fileId, versionId: file.fileRef.versionId },
+    ...(file.path ? { path: file.path } : {}),
+    ...(file.storagePath ? { storagePath: file.storagePath } : {}),
+    downloadUrl: file.downloadUrl ?? file.url,
+    filename: file.filename,
+    mimeType: file.mimeType,
+    size: Number(file.size) || 0,
+    type,
+    ...(Number.isFinite(file.width) ? { width: file.width } : {}),
+    ...(Number.isFinite(file.height) ? { height: file.height } : {}),
+    ...(file.source ? { source: file.source } : {}),
   }
 }
 

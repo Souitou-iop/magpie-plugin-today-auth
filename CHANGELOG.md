@@ -1,5 +1,23 @@
 # CHANGELOG
 
+## 0.1.4
+
+把两个「已知局限」变成了功能，其余三条写清为什么留着。
+
+- **会话隔离（默认开）**：一个 magpie session 一条 Today **任务会话**，不再所有 agent 挤进
+  账号主会话。实测协议：`target:{type:"new_task",surface:"task_panel"}` 建会话（202 返回
+  `conversationId`/`taskId`），之后 `isMainChat:false + conversationId + taskId` 续聊；
+  历史与轮询都按这条会话走。⚠ 该形态**不能**带 `isMainChat`，带上就 400。
+  实测：同 session 第二轮能答出第一轮记住的内容，另一 session 互不影响。
+  代价是 Tasks 里会多出任务记录 → 选项 `isolation:"main"` 可关。
+- **图片附件**：`image_url`（data URL / http(s)）先 `POST /v1/files` 上传，再拼
+  `parts[].uploadedFile`。实测：必须带 `url / storagePath / downloadUrl / fileRef`，
+  缺字段直接 `400 Invalid request`；1×1 PNG 上去后模型答出了颜色。
+  限制：每次 ≤4 张、单张 ≤20 MB、只认 `image/*`。
+- **插件选项**：`isolation` / `attachments` / `contextWindow`，`magpie plugin options today '{…}'`。
+- 仍然不支持：**工具调用**（协议里有 invocation 帧，但 agent 工具 ↔ Today invocation 的
+  语义没有实测依据）；**非图片附件**；**上下文 1 MiB 硬限**；**token 数只能估**。
+
 ## 0.1.3
 
 - 供应商显示名回到原名 **Today AI**（不再写「今日」）；`registry-entry.json` 与

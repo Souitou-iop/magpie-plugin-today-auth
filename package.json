@@ -1,7 +1,7 @@
 {
   "name": "magpie-plugin-today-auth",
-  "version": "0.1.3",
-  "description": "Today AI (todayai.cn) for magpie: 手机号验证码 / Cookie 登录，按账号的档位目录（DeepSeek / MiniMax / GLM …），通过 Today 的 canonical 消息协议（WebSocket 推送 + 轮询兜底）跑对话，套餐与额度上报。",
+  "version": "0.1.4",
+  "description": "Today AI (todayai.cn) for magpie: 手机号验证码 / Cookie 登录，按账号的档位目录，每个 magpie session 一条独立的 Today 会话，支持图片附件，套餐与额度上报。",
   "type": "module",
   "main": "./index.mjs",
   "exports": "./index.mjs",

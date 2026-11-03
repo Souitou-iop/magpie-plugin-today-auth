@@ -24,6 +24,7 @@
 
 import { API_BASE, IDLE_TIMEOUT_MS, POLL_INTERVAL_MS, POLL_PAGE_LIMIT, WS_SETUP_TIMEOUT_MS } from "./constants.mjs"
 import { appendMessage, fetchHistory, fetchWsTicket } from "./http.mjs"
+import { conversationOf, forgetConversation, rememberConversation } from "./sessions.mjs"
 import { deltaOf, isMessageDone, isReplyTo, textOfMessage, bodyForPrompt } from "./pure.mjs"
 
 const WS_GLOBAL = () => globalThis.WebSocket
@@ -47,6 +48,9 @@ export async function* streamReply({
   isMainChat = true,
   conversationId,
   mainConversationId,
+  isolation = "task",
+  sessionKey = "",
+  accountKey = "",
   signal,
   idleTimeoutMs = IDLE_TIMEOUT_MS,
   log = () => {},
@@ -63,7 +67,16 @@ export async function* streamReply({
   let socket = null
   try {
     const messageBody = body ?? bodyForPrompt(prompt)
-    const target = conversationId ?? mainConversationId
+
+    // 目标会话：
+    //   isolation="task" → 这个 magpie session 自己的一条 Today 会话（第一次现建）
+    //   isolation="main" → 全账号共用的主会话
+    // 显式给了 conversationId 就用它（测试/调试）。
+    const isolated = isolation !== "main" && Boolean(sessionKey)
+    const known = isolated && !conversationId ? conversationOf(accountKey, sessionKey) : null
+    let target = conversationId ?? (isolated ? known?.conversationId : null) ?? mainConversationId ?? ""
+    let taskId = known?.taskId ?? null
+    let mustCreate = isolated && !conversationId && !known
 
     // ① 先把 WS 连上 —— 反过来会漏掉「刚发出去就推回来」的头几帧
     let wsFailure = null
@@ -81,21 +94,47 @@ export async function* streamReply({
       cursor = await latestCursor(token, deviceId, target, local.signal).catch(() => null)
     }
 
-    // ② 追加消息
+    // ② 追加消息（隔离模式下第一条消息顺带建会话）
     let userMessage = null
-    try {
+    const send = async ({ create = false } = {}) => {
       const accepted = await appendMessage({
         token,
         deviceId,
         clientMessageId,
         body: messageBody,
-        isMainChat,
-        conversationId,
+        isMainChat: create ? true : isolated ? false : isMainChat,
+        conversationId: create ? undefined : target || undefined,
+        taskId: create ? undefined : taskId || undefined,
+        target: create ? { type: "new_task", surface: "task_panel" } : undefined,
         signal: local.signal,
       })
+      if (create) {
+        const message = accepted.message
+        if (message?.conversationId) {
+          target = conversationId ?? message.conversationId
+          taskId = message.taskId ?? null
+          rememberConversation(accountKey, sessionKey, {
+            conversationId: message.conversationId,
+            taskId: message.taskId,
+          })
+          log(`为这个会话建了 Today 任务会话 ${String(message.conversationId).slice(0, 8)}…`, "debug")
+        }
+      }
+      return accepted
+    }
+
+    try {
+      const accepted = await send({ create: mustCreate })
       userMessage = accepted.message
-    } finally {
-      // 发不出去就没什么可等的了
+    } catch (error) {
+      // 会话可能被删了：丢掉映射，重建一次
+      if (isolated && (Number(error?.status) === 404 || Number(error?.status) === 400)) {
+        forgetConversation(accountKey, sessionKey)
+        const accepted = await send({ create: true })
+        userMessage = accepted.message
+      } else {
+        throw error
+      }
     }
 
     // ③ 收

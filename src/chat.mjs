@@ -23,10 +23,14 @@ import {
   isAuthFailure,
   putModelOption,
   TodayApiError,
+  uploadedFileOf,
+  uploadFile,
 } from "./http.mjs"
 import {
+  attachmentsOf,
   bodyForPrompt,
   byteLength,
+  extensionOf,
   chunkFrame,
   completionFrame,
   estimateTokens,
@@ -140,6 +144,8 @@ export async function chatFetch({
   deviceId,
   accountKey = "",
   mainConversationId = "",
+  isolation = "task",
+  attachments = true,
   log = () => {},
 }) {
   const request = input instanceof Request ? new Request(input, init) : null
@@ -170,10 +176,29 @@ export async function chatFetch({
   const wantStream = payload.stream === true
   const includeUsage = payload?.stream_options?.include_usage === true || payload?.stream_options?.include_usage === undefined
 
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(new Error("timeout")), CHAT_TIMEOUT_MS)
+  timer.unref?.()
+  const signal = request?.signal ? anySignal([request.signal, controller.signal], controller) : controller.signal
+
   const prompt = truncate(promptFromMessages(messages, { maxChars: PROMPT_MAX_CHARS }), PROMPT_MAX_CHARS)
-  if (!prompt.trim()) return openAiError(400, "没有可发送的用户文本", { code: CODES.invalidRequest })
+  const images = attachments ? attachmentsOf(lastUserContent(messages)) : []
+  if (!prompt.trim() && images.length === 0) {
+    return openAiError(400, "没有可发送的用户文本", { code: CODES.invalidRequest })
+  }
+
+  // 附件：先 POST /v1/files 拿 fileRef，再把 ref 塞进 parts（正文不背 base64）
+  let fileParts = []
+  if (images.length > 0) {
+    try {
+      fileParts = await buildAttachmentParts({ token, deviceId, images, signal })
+    } catch (error) {
+      log(`附件上传失败，只发文本：${error?.message ?? error}`, "warning")
+    }
+  }
 
   const body = bodyForPrompt(prompt)
+  for (const part of fileParts) body.parts.push(part)
   if (byteLength(body) > 1024 * 1024 - 4096) {
     return openAiError(400, "上下文超出长度限制：消息超过 Today 单条 1 MiB 上限", {
       code: CODES.invalidRequest,
@@ -205,11 +230,7 @@ export async function chatFetch({
   const created = Math.floor(Date.now() / 1000)
   const id = `chatcmpl-${randomUUID().replaceAll("-", "").slice(0, 24)}`
 
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(new Error("timeout")), CHAT_TIMEOUT_MS)
-  timer.unref?.()
-  const signal = request?.signal ? anySignal([request.signal, controller.signal], controller) : controller.signal
-
+  const sessionKey = String(request?.headers?.get("x-today-session") ?? "").slice(0, 128)
   const iterator = streamReply({
     token,
     deviceId,
@@ -217,6 +238,9 @@ export async function chatFetch({
     body,
     prompt,
     mainConversationId: conversationId,
+    isolation,
+    sessionKey,
+    accountKey: accountKey || deviceId,
     signal,
     log,
   })
@@ -347,6 +371,53 @@ export async function chatFetch({
       "x-today-model": model,
     },
   })
+}
+
+/** 最后一条 user 消息的 content（图片在里面） */
+function lastUserContent(messages) {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i]?.role === "user") return messages[i]?.content
+  }
+  return undefined
+}
+
+/**
+ * 把附件上传成 canonical parts。
+ *
+ * data URL 解码后直接传字节；http(s) 的先下回来再上传 —— Today 的 part 只认自己
+ * 文件系统里的 fileRef，不认外部 URL。
+ */
+async function buildAttachmentParts({ token, deviceId, images, signal }) {
+  const parts = []
+  for (const image of images) {
+    let data = null
+    let mimeType = image.mimeType ?? "image/png"
+    if (image.kind === "data") {
+      data = Buffer.from(image.base64, "base64")
+    } else {
+      const response = await fetch(image.url, { signal, redirect: "follow" })
+      if (!response.ok) throw new TodayApiError(`下载附件失败：HTTP ${response.status}`, { phase: "upload" })
+      const type = (response.headers.get("content-type") ?? "").split(";")[0].trim()
+      if (type.startsWith("image/")) mimeType = type
+      data = Buffer.from(await response.arrayBuffer())
+    }
+    if (!data || data.length === 0) continue
+    if (data.length > 20 * 1024 * 1024) throw new TodayApiError("附件超过 20 MB", { phase: "upload" })
+    const file = await uploadFile({
+      token,
+      deviceId,
+      data,
+      filename: `image.${extensionOf(mimeType)}`,
+      mimeType,
+      signal,
+    })
+    parts.push({
+      id: file.id,
+      type: file.type === "image" ? "image" : "file",
+      uploadedFile: uploadedFileOf(file),
+    })
+  }
+  return parts
 }
 
 /**

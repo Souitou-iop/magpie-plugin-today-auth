@@ -26,6 +26,9 @@ export async function startMockToday({
   midStreamErrorFrame = false,
 } = {}) {
   const state = {
+    conversations: new Map(), // conversationId → { taskId }
+    uploads: [],
+    tasks: 0,
     deviceId: "mock_device_1",
     registeredMachines: [],
     sentOtps: [],
@@ -198,15 +201,39 @@ export async function startMockToday({
 
     if (req.method === "POST" && url.pathname === "/v1/messages") {
       const clientMessageId = body?.clientMessageId
-      if (body?.isMainChat !== true || !Array.isArray(body?.body?.parts) || !clientMessageId) {
+      if (!Array.isArray(body?.body?.parts) || !clientMessageId) {
         return json(400, { code: "invalid_request", message: "bad canonical body" })
       }
+      let conversationId = body?.conversationId
+      let taskId = body?.taskId ?? null
+
+      // 真服务端是 strict schema：new_task 形态带 isMainChat 会被 400（实测踩过）
+      if (body?.target?.type === "new_task" && "isMainChat" in body) {
+        return json(400, { error: "Invalid request" })
+      }
+      if (body?.target?.type === "new_task") {
+        // 建一条新会话（真服务端回 202 + conversationId/taskId）
+        state.tasks += 1
+        conversationId = `conv_task_${state.tasks}`
+        taskId = `task_${state.tasks}`
+        state.conversations.set(conversationId, { taskId })
+      } else if (body?.isMainChat === true) {
+        conversationId = "conv_main"
+        state.conversations.set(conversationId, { taskId: null })
+      } else if (body?.isMainChat === false) {
+        if (!conversationId || !state.conversations.has(conversationId)) {
+          return json(404, { error: "resource.not_found" })
+        }
+      } else {
+        return json(400, { code: "invalid_request", message: "bad canonical body" })
+      }
+
       state.appended.push(body)
-      const conversationId = body?.conversationId ?? "conv_main"
       const userMessage = {
         id: `u_${randomUUID()}`,
         conversationId,
-        threadId: "th_main",
+        threadId: `th_${conversationId}`,
+        taskId,
         cursor: `cu_${state.history.length}`,
         role: "user",
         state: "completed",
@@ -215,25 +242,56 @@ export async function startMockToday({
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
         body: {
-          parts: body.body.parts.map((p) => ({ messageType: p.type === "text" ? "turn" : "text", content: { text: [p.text ?? ""] } })),
+          parts: body.body.parts.map((p) => ({
+            messageType: p.type === "text" ? "text" : p.type,
+            content: p.type === "text" ? { text: p.text ?? "" } : { file: p.uploadedFile?.filename ?? "" },
+          })),
         },
       }
       state.history.push(userMessage)
 
-      const assistantId = `a_${randomUUID()}`
-      // 先推 ws（如果连上了），否则靠轮询把历史补齐
       if (state.sockets.size > 0 && withWebSocket) {
-        streamReplyOverSockets(state, { assistantId, clientMessageId, conversationId, replyText })
+        streamReplyOverSockets(state, { assistantId: `a_${randomUUID()}`, clientMessageId, conversationId, replyText })
       } else {
-        streamReplyOverHistory(state, { assistantId, clientMessageId, conversationId, replyText })
+        streamReplyOverHistory(state, { assistantId: `a_${randomUUID()}`, clientMessageId, conversationId, replyText })
       }
-      return json(200, { success: true, code: "common.ok", data: { canonicalMessage: userMessage } })
+      return json(202, { success: true, code: "common.ok", data: { canonicalMessage: userMessage } })
+    }
+
+    if (req.method === "POST" && url.pathname === "/v1/files") {
+      const type = String(req.headers["content-type"] ?? "")
+      if (!type.startsWith("multipart/form-data")) {
+        return json(400, { code: "invalid_request", message: "multipart required" })
+      }
+      const chunks = []
+      for await (const chunk of req) chunks.push(chunk)
+      const raw = Buffer.concat(chunks)
+      const size = raw.length
+      state.uploads.push({ size, type })
+      const id = `nd_${randomUUID().replaceAll("-", "")}`
+      return json(201, {
+        file: {
+          id,
+          path: `files/mock/${id}-image.png`,
+          storagePath: `files/mock/${id}-image.png`,
+          url: `http://mock/v1/files/mock/${id}-image.png`,
+          downloadUrl: `http://mock/v1/files/mock/${id}-image.png`,
+          filename: "image.png",
+          mimeType: "image/png",
+          size: 64,
+          type: "image",
+          fileRef: { fileId: id, versionId: `ver_${id.slice(3)}` },
+          width: 8,
+          height: 8,
+        },
+      })
     }
 
     if (req.method === "GET" && url.pathname === "/v1/conversations/messages") {
       const after = url.searchParams.get("after")
+      const wanted = url.searchParams.get("conversationId")
       const limit = Math.min(Number(url.searchParams.get("limit") ?? 50) || 50, 200)
-      let items = state.history
+      let items = wanted ? state.history.filter((m) => m.conversationId === wanted) : state.history
       if (after) {
         const idx = items.findIndex((m) => m.cursor === after)
         items = idx >= 0 ? items.slice(idx + 1) : items

@@ -143,6 +143,45 @@ export function promptFromMessages(messages, { maxChars = 180_000 } = {}) {
 }
 
 /**
+ * OpenAI 的 content 里的图片 → 待上传的附件清单。
+ *
+ * 支持两种：`data:<mime>;base64,…`（解码后上传）和 `https://…`（先 GET 再上传）。
+ * 别的类型（audio/pdf 的 OpenAI 形状）不认，直接忽略 —— 宁可少传，不要 400。
+ */
+export function attachmentsOf(content, { max = 4 } = {}) {
+  const out = []
+  if (!Array.isArray(content)) return out
+  for (const piece of content) {
+    if (out.length >= max) break
+    if (piece?.type !== "image_url") continue
+    const url = typeof piece.image_url === "string" ? piece.image_url : piece.image_url?.url
+    if (typeof url !== "string" || !url) continue
+    if (url.startsWith("data:")) {
+      const comma = url.indexOf(",")
+      if (comma < 0) continue
+      const header = url.slice(5, comma)
+      if (!header.includes("base64")) continue
+      const mimeType = header.split(";")[0] || "image/png"
+      if (!mimeType.startsWith("image/")) continue
+      out.push({ kind: "data", mimeType, base64: url.slice(comma + 1) })
+      continue
+    }
+    if (/^https?:\/\//i.test(url)) out.push({ kind: "url", url })
+  }
+  return out
+}
+
+/** data URL 的 image/png → 扩展名，上传时文件名要像样 */
+export function extensionOf(mimeType) {
+  const m = String(mimeType ?? "").toLowerCase()
+  if (m.includes("png")) return "png"
+  if (m.includes("jpeg") || m.includes("jpg")) return "jpg"
+  if (m.includes("webp")) return "webp"
+  if (m.includes("gif")) return "gif"
+  return "png"
+}
+
+/**
  * 截断：留头 60% + 尾 40%。
  *
  * 头留着是因为 agent 的 system prompt / 任务说明在前面，尾巴一般是当前这一步

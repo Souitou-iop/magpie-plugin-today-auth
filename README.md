@@ -116,20 +116,50 @@ magpie 的模型 id = optionId 去掉分组前缀（`mode.` / `model.`）；显�
 
 ---
 
+## 会话隔离与插件选项
+
+默认**一个 magpie session 一条 Today 会话**（不是全账号共用主会话）：
+
+```
+POST /v1/messages { clientMessageId, body:{parts}, target:{type:"new_task",surface:"task_panel"} }
+  → 202 { canonicalMessage:{ conversationId, taskId } }      ← 第一次用它时现建
+POST /v1/messages { isMainChat:false, conversationId, taskId, clientMessageId, body }  ← 之后的轮次
+```
+
+session id 由插件自己的 `chat.headers` 钩子以 `x-today-session` 头带进请求，插件按
+`账号 + session` 记住 conversationId。实测：同一 session 第二轮能答出第一轮让它记住的东西，
+另一个 session 互不影响。
+
+代价：每个 session 会在 Today 的 Tasks 里留下一条任务记录。不想留就关掉：
+
+```sh
+magpie plugin options today '{"isolation":"main"}'
+```
+
+| 选项 | 默认 | 作用 |
+| --- | --- | --- |
+| `isolation` | `"task"` | `"task"` = 每 session 一条任务会话；`"main"` = 全账号共用主会话 |
+| `attachments` | `true` | `false` 时忽略请求里的图片 |
+| `contextWindow` | `200000` | 告诉 agent 的上下文窗口（没有权威来源，只能给保守值） |
+
 ## 已知边界
 
-- **不支持工具调用。** Today 的工具（浏览器、日历、Slack、Notion…）在服务端那侧跑，
-  不能把 `tool_calls` 交回给 agent，所以 `capabilities.toolcall = false`。
-- **不支持附件 / 图片。** 需要先 `POST /v1/files` 拿 `fileRef` 再塞进 parts，v1 没做。
-- **上下文按 1 MiB 截断。** Today 单条 canonical 消息上限 1 MiB（schema 写死），插件取最后一条
-  user 消息，超过 18 万字符留头 60% + 尾 40%。
-- **只在主会话里跑。** 用 `isMainChat:true`，历史由服务端维护 —— 好处是永不 404，
-  代价是多个 agent 会话共用 Today 的同一个主对话；回复靠 `originClientMessageId` 认领，不会串。
-- **token 数是估的。** Today 不回 usage，SSE 末尾的 `usage` 按字符估算（中文 1.6 字符/token，
-  英文 4 字符/token）。真实额度看卡片，别看这里。
-- **context 窗口是保守值 200K。** 没有逐个实测；填大只会让 agent 晚压缩。
-
----
+- **工具调用仍不支持。** Today 的工具（浏览器、日历、Slack、Notion…）在服务端那侧跑，
+  协议里虽然有 `invocation.request / ack / progress / result` 这一套（设备也能在
+  `device.hello` 里声明 `tools`），但把 agent 的 `tools` 映射成 Today 的 invocation、
+  再让 agent 执行完把结果接回同一条 run，需要实测协议语义；目前只做到「不假装支持」：
+  `capabilities.toolcall = false`。
+- **图片支持，其它附件没做。** `image_url`（data URL 或 http(s)）会先 `POST /v1/files`
+  上传，再把 `fileRef` 拼进 `parts[].uploadedFile` —— 拼的时候必须带
+  `url / storagePath / downloadUrl / fileRef`，缺一个就是 `400 Invalid request`。
+  上限：每次最多 4 张、单张 20 MB、只认 `image/*`；PDF、语音、音频没接。
+- **上下文按 1 MiB 截断。** Today 单条 canonical 消息上限 1 MiB（schema 写死），插件取最后
+  一条 user 消息，超过 18 万字符留头 60% + 尾 40%。会话隔离后 Today 自己保留历史，
+  但 agent 每轮仍会带完整上下文来，所以这条截断仍然有效。
+- **token 数是估的。** 消息、`/v1/config`、history 里都没有 usage / token 字段（查过），
+  只有 `pricing` 的 1% 粒度进度；SSE 末尾的 `usage` 按字符估（中文 1.6 字符/token，
+  英文 4 字符/token）。真实额度看卡片。
+- **context 窗口没有权威值。** 服务端不下发，默认 200K，可用 `contextWindow` 选项改。
 
 ## 验证到哪一步
 
@@ -144,6 +174,8 @@ magpie 的模型 id = optionId 去掉分组前缀（`mode.` / `model.`）；显�
 | 端到端（假服务端） | `npm test` 49 条：含最小 WebSocket 实现、设备注册、真实事件形状；WS 出字、轮询兜底、档位、401、额度、目录、单帧 error 不断流 |
 | 真账号直连插件 | `provider.models` 读到 3 档；`loader.fetch` 出字（`pong`，4.3s，WS 直连）；`auth.usage` 读到 Pro / 用量 26% / 五条拆分 |
 | 真账号过 magpie 网关 | `POST /v1/chat/completions` 两个档位都回 `pong`；`/v1/magpie/quotas` 里 `today` 卡片是 plan Pro、用量 26% + 五条拆分 |
+| 会话隔离 | 同一 session 第二轮答出「第一轮让它记住的那个词」，另一 session 互不影响；两轮分别落在两条 Today 任务会话里 |
+| 图片 | 1×1 的 PNG 经上传后，Today 回「浅粉色（鲑鱼粉）」—— 说明附件真的到了模型那侧 |
 
 ---
 
