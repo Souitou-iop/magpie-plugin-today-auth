@@ -183,7 +183,7 @@ export async function chatFetch({
   // 档位：账号级设置，变了才写。
   // ⚠ 两条实测教训（2026-11-03）：
   //   ① 传**不属于这个账号**的 optionId 会回 403 auth.forbidden
-  //      （我最早写死 mode.power，就是这个 403）；
+  //      （早期版本写死 mode.power，就是这个 403）；
   //   ② 切档失败绝不能让这轮对话失败 —— 早期版本把它当登录失效，整个请求 401，
   //      表现就是 magpie 里「测试模型不通过」。
   try {

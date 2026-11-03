@@ -22,7 +22,7 @@
   （只展示，否则同一个号被算两遍）。
 - **主会话 id 永远为空**：`mainConversationId` 在 `data.messageCapabilities` 下面，不在 `data` 上。
   读错导致轮询兜底全废。
-- **档位表不写死**：不同账号下发的是不同 id —— 我的 Pro 账号是
+- **档位表不写死**：不同账号下发的是不同 id —— 实测一个 Pro 账号是
   `model.deepseek-v4.1-flash / model.minimax-m31-flash / model.glm-5.3`（倍数 1×/1×/4×），
   没有 `mode.*`。现在目录从 `/v1/pricing/status` 现拉，模型 id 去掉 `model.` 前缀，
   名字带「消耗倍数」；未登录只给一个诚实的兜底模型 `today`。

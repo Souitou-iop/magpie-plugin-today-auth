@@ -3,9 +3,8 @@
 把 **Today AI**（[todayai.cn](https://todayai.cn)）接进 magpie：用你自己账号的套餐跑
 Claude Code、Codex、OpenCode 这些 agent，模型、对话、额度都走 magpie 同一套。
 
-magpie 市场里没有 Today 的插件（2026-11-03 查过 `@magpie-community/*` 的 67 个包与 npm 关键词，
-一个都没有），这个包是照着官方 macOS 客户端 `today-macos-arm64.dmg`（Today 1.24.0）和
-`todayai.cn` 的前端构建逆出来的。
+协议细节来自官方 macOS 客户端 `today-macos-arm64.dmg`（Today 1.24.0）与 `todayai.cn`
+的前端构建产物；每个端点、每个字段的出处都写在对应 `src/*.mjs` 顶部注释里。
 
 ---
 
@@ -71,11 +70,11 @@ POST https://auth.todayai.cn/api/auth/phone-number/verify     {"phoneNumber":"+8
 `VALIDATION_ERROR: [body.code] Invalid input`，而 magpie 那边显示的是「授权失败」。
 `npm run probe` 里有一条语义探针专门盯这件事。
 
-**② 粘贴 Cookie（推荐）**：登录 todayai.cn 后从开发者工具复制
+**② 粘贴 Cookie**：登录 todayai.cn 后从开发者工具复制
 `better-auth.session_token=…` 那一行。cookie 方式能自动续期 —— 账号记录里 `refresh`
 存的就是这份 cookie，插件拿它打 `POST /api/token` 换新的 1 小时 Bearer。
 
-也可以粘 `POST /api/token` 拿到的 JWT，但它只活 1 小时、不会自动续。
+也可以粘 `POST /api/token` 拿到的 JWT，但它只活 1 小时、不会自动续 —— 长期使用走 Cookie 方式。
 
 ---
 
@@ -90,7 +89,7 @@ Today 的「档位」是**账号级**设置，服务端替你挑具体模型。�
 | web 构建的 mock | `mode.fast`、`mode.balanced`、`mode.power` | `today/fast`、`today/balanced`、`today/power` |
 
 magpie 的模型 id = optionId 去掉分组前缀（`mode.` / `model.`）；显示名带「消耗倍数」。
-未登录时只有一个诚实的兜底模型 `today`（用账号当前档位），不编造一堆用不了的型号。
+未登录时只有一个兜底模型 `today`（走账号当前档位）—— 账号名下有哪些档位，只有登录后才知道。
 
 选中某个模型后，插件在**发消息前** `PUT /v1/pricing/model-option` 切到那个档位，同一档位只打一次。
 档位是账号级开关，所以 `maxConcurrency` 是 2 —— 同时跑两个不同档位的请求会互相踩。
@@ -119,7 +118,7 @@ magpie 的模型 id = optionId 去掉分组前缀（`mode.` / `model.`）；显�
 
 ## 已知边界
 
-- **不支持工具调用。** Today 的工具（浏览器、日历、Slack、Notion…）在它自己那侧跑，
+- **不支持工具调用。** Today 的工具（浏览器、日历、Slack、Notion…）在服务端那侧跑，
   不能把 `tool_calls` 交回给 agent，所以 `capabilities.toolcall = false`。
 - **不支持附件 / 图片。** 需要先 `POST /v1/files` 拿 `fileRef` 再塞进 parts，v1 没做。
 - **上下文按 1 MiB 截断。** Today 单条 canonical 消息上限 1 MiB（schema 写死），插件取最后一条

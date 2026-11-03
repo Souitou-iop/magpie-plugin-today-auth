@@ -1,7 +1,7 @@
 // Today AI · 档位目录（按账号，不硬编码）
 //
-// 一开始我以为档位是 `mode.fast / mode.balanced / mode.power` —— 那是 web 构建
-// 里 mock 的取值。**真账号**（Pro）下发的是完全另一组：
+// ⚠ 不要按 web 构建里的 mock 去写死档位：那是 `mode.fast / mode.balanced / mode.power`。
+// **真账号**（Pro）下发的是完全另一组：
 //
 //   model.deepseek-v4.1-flash   1×   (selected)
 //   model.minimax-m31-flash     1×
